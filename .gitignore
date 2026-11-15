@@ -1,0 +1,8 @@
+# compiler toolchain (llvm-mingw, downloaded separately)
+/tools/
+# test output
+/shots/
+/shots$run/
+# build output and run-time files (louke.ini, louke.log, ...)
+/bin/
+/devtools/*.exe
