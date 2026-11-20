@@ -6,3 +6,5 @@
 # build output and run-time files (louke.ini, louke.log, ...)
 /bin/
 /devtools/*.exe
+# TAS movies (made while testing)
+/movies/
