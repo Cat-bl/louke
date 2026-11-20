@@ -1,10 +1,9 @@
 // Direct3D 9 frame boundary: Direct3DCreate9 (game executable import) -> IDirect3D9::CreateDevice
-// -> IDirect3DDevice9::Present. Each Present of the game thread ends one TAS frame, unless a game
-// profile marks the frame boundary itself (tas_claim_frame_boundary); such a profile also calls
-// d3d9_capture before presenting. Note: overlays may rewrite the device's Present slot after the
-// hook is installed (seen with the steam_api.dll shipped next to kofxiii.exe), so a profile-owned
-// boundary is the more reliable choice when the game has its own Present call site.
-// The game thread is taken from the first Present unless a game profile identified it earlier.
+// -> IDirect3DDevice9::Present. Each Present of the game thread ends one TAS frame; so does a
+// failed TestCooperativeLevel (the device is lost: the game skips presenting that frame, but the
+// frame still ends). A game profile may mark the frame boundary itself instead
+// (tas_claim_frame_boundary) and then calls d3d9_capture before presenting.
+// The game thread is the thread of the first Present, unless a game profile identified it earlier.
 //
 // Debug capture (testing determinism):
 //   LOUKE_FRAMEHASH=<file>                 one back-buffer hash per frame
@@ -200,6 +199,14 @@ void d3d9_capture(void *dev) {
     if (avdump_active()) export_frame(dev);
 }
 
+typedef HRESULT (WINAPI *TCL_t)(void *);
+static TCL_t o_TestCooperativeLevel;
+static HRESULT WINAPI h_TestCooperativeLevel(void *dev) {
+    HRESULT hr = o_TestCooperativeLevel(dev);
+    if (FAILED(hr) && tas_is_game_thread() && !tas_frame_boundary_claimed()) tas_frame_end();
+    return hr;
+}
+
 static HRESULT WINAPI h_Present(void *dev, const RECT *src, const RECT *dst, HWND wnd, const void *dirty) {
     if (!tas_game_thread()) tas_set_game_thread(GetCurrentThreadId());
     if (!tas_is_game_thread() || tas_frame_boundary_claimed()) return o_Present(dev, src, dst, wnd, dirty);
@@ -303,6 +310,7 @@ static HRESULT WINAPI h_Reset(void *dev, void *pp) {
 
 typedef struct { int slot; void *fn; void **orig; } DevHook;
 static const DevHook kDevHooks[] = {
+    {3, (void *)h_TestCooperativeLevel, (void **)&o_TestCooperativeLevel},
     {16, (void *)h_Reset, (void **)&o_Reset},
     {13, (void *)h_CreateSwapChain, (void **)&o_CreateSwapChain},
     {23, (void *)h_CreateTexture, (void **)&o_CreateTexture},

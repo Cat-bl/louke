@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #define TAS_SHARED_MAGIC   0x4B554F4Cu   /* "LOUK" */
-#define TAS_SHARED_VERSION 4u
+#define TAS_SHARED_VERSION 5u
 #define TAS_SLOTS          10            // savestate slots
 
 enum {                      // configurable hotkeys
@@ -30,6 +30,16 @@ enum {                      // commands sent by the control window buttons
 
 enum { TASMODE_NONE, TASMODE_RECORD, TASMODE_PLAY };
 
+enum {                      // why a video export failed (the control window shows it in its language)
+    EXPERR_NONE,
+    EXPERR_NO_MF,           // Media Foundation is not available
+    EXPERR_CREATE_FILE,     // the output file cannot be created
+    EXPERR_ENCODER,         // the encoder cannot be set up
+    EXPERR_WRITE,           // writing failed
+    EXPERR_FINALIZE,        // finishing the file failed
+    EXPERR_THREAD,          // the encoder thread cannot be started
+};
+
 #define TAS_SLOT_EMPTY 0xFFFFFFFFu
 
 typedef struct {
@@ -46,8 +56,10 @@ typedef struct {
     volatile uint32_t saveAck;               // = cmdSeq[CMD_SAVE] after that save request was handled
     volatile uint32_t heartbeat;
     volatile uint32_t slotFrame[TAS_SLOTS];  // frame of each savestate, TAS_SLOT_EMPTY if none
-    wchar_t gameTitle[48];                   // recognised game profile, or "" for the generic core
+    wchar_t gameTitle[48];                   // recognised game profile, or "" for the generic core (Chinese)
+    wchar_t gameTitleEn[48];                 // the same in English
     volatile uint32_t exportState;           // 0 idle, 1 exporting, 2 finishing the file, 3 done, 4 failed
     volatile uint32_t exportFrames;          // frames written so far
-    char exportError[160];
+    volatile uint32_t exportErrorCode;       // EXPERR_*
+    volatile uint32_t exportErrorHr;         // HRESULT of the failure
 } TasShared;

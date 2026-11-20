@@ -95,7 +95,7 @@ void avdump_finish(DWORD ms);                          // stop and wait (up to m
 int  avdump_active(void);
 int  avdump_state(void);
 uint32_t avdump_frames(void);
-const char *avdump_error(void);
+uint32_t avdump_error(uint32_t *hr);                   // EXPERR_* of a failed export, and its HRESULT
 void avdump_video(const uint8_t *bgrx, int pitch, UINT w, UINT h);   // picture of the current frame
 void avdump_frame_begin(int64_t duration100ns);                      // a frame ended: its sound comes next
 void avdump_audio(int src, const void *fmt, const void *p1, DWORD n1, const void *p2, DWORD n2, LONG volume, int realtime);
@@ -105,7 +105,8 @@ int  tas_export_fast(void);        // exporting a whole movie: no pacing, no liv
 // ---- game profiles
 typedef struct {
     const char    *id;             // written into movies, e.g. "kof13"
-    const wchar_t *title;          // shown in the control window
+    const wchar_t *title;          // shown in the control window (Chinese)
+    const wchar_t *titleEn;        // the same in English
     int  (*match)(HMODULE exe, const IMAGE_NT_HEADERS32 *nt);
     int  (*install)(HMODULE exe);  // runs before the game's entry point; 0 = refuse to run
     void (*pause_tick)(void);      // called repeatedly while the game is paused at a frame boundary

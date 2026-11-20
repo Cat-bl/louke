@@ -57,7 +57,7 @@ static volatile LONG g_state;          // AVDUMP_IDLE / RUNNING / FINISHING / DO
 static volatile LONG g_frames;
 static wchar_t g_path[MAX_PATH];
 static int g_quality;
-static char g_err[160];
+static uint32_t g_errCode, g_errHr;
 
 // per frame being assembled (game thread)
 static uint8_t *g_pix;
@@ -85,9 +85,13 @@ static DWORD g_tmpCap;
 static int64_t g_frameEnd;             // output sample at the end of the frame being assembled
 static uint64_t g_samplesOut;          // sound samples written so far
 
-static void fail(const char *what, HRESULT hr) {
-    snprintf(g_err, sizeof g_err, "%s (0x%08lX)", what, (unsigned long)hr);
-    tas_log("export: %s", g_err);
+static void fail(uint32_t code, HRESULT hr) {
+    static const char *const kWhat[] = {"", "Media Foundation is not available", "cannot create the output file",
+        "the video encoder could not be set up", "writing the video failed", "finishing the file failed",
+        "cannot start the encoder thread"};
+    g_errCode = code;
+    g_errHr = (uint32_t)hr;
+    tas_log("export: %s (0x%08lX)", code < sizeof kWhat / sizeof kWhat[0] ? kWhat[code] : "?", (unsigned long)hr);
     InterlockedExchange(&g_state, AVDUMP_FAILED);
     if (g_csInit) {                    // a game thread waiting for queue space goes on
         EnterCriticalSection(&g_cs);
@@ -124,7 +128,7 @@ static IMFSinkWriter *open_writer(UINT w, UINT h, int hw, DWORD *vs, DWORD *as) 
     if (SUCCEEDED(hr)) hr = IMFAttributes_SetUINT32(attr, &MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, hw ? TRUE : FALSE);
     if (SUCCEEDED(hr)) hr = pMFCreateSinkWriterFromURL(g_path, NULL, attr, &wr);
     if (attr) IMFAttributes_Release(attr);
-    if (FAILED(hr)) { fail("无法创建导出文件", hr); return NULL; }
+    if (FAILED(hr)) { fail(EXPERR_CREATE_FILE, hr); return NULL; }
     UINT32 rate = kBitrate[g_quality < 0 || g_quality > 3 ? 1 : g_quality];
     // video: H.264 out, RGB32 (top-down) in
     if (SUCCEEDED(hr = pMFCreateMediaType(&t))) {
@@ -176,7 +180,7 @@ static IMFSinkWriter *open_writer(UINT w, UINT h, int hw, DWORD *vs, DWORD *as) 
     if (FAILED(hr)) {
         IMFSinkWriter_Release(wr);
         DeleteFileW(g_path);
-        if (!hw) fail("无法启动视频编码器", hr);
+        if (!hw) fail(EXPERR_ENCODER, hr);
         return NULL;
     }
     tas_log("export: %ux%u, %u kbit/s, %s encoder", w, h, rate / 1000, hw ? "hardware or software" : "software");
@@ -225,7 +229,7 @@ static DWORD WINAPI encoder(void *arg) {
     DWORD vs = 0, as = 0;
     UINT w = 0, h = 0;
     int started = SUCCEEDED(pMFStartup(MF_VERSION, MFSTARTUP_FULL));
-    if (!started) fail("系统缺少 Media Foundation 组件", E_FAIL);
+    if (!started) fail(EXPERR_NO_MF, E_FAIL);
     for (;;) {
         Item *it = take();
         if (it->stop || g_state == AVDUMP_FAILED) { free_item(it); break; }
@@ -254,7 +258,7 @@ static DWORD WINAPI encoder(void *arg) {
             hr = write_sample(wr, as, it->pcm, it->samples * OUT_CH * 2, (int64_t)(it->aStart * 10000000 / OUT_RATE),
                               (int64_t)((uint64_t)it->samples * 10000000 / OUT_RATE), 0, 0, 0);
         free_item(it);
-        if (FAILED(hr)) { fail("写入视频失败", hr); IMFSinkWriter_Release(wr); wr = NULL; }
+        if (FAILED(hr)) { fail(EXPERR_WRITE, hr); IMFSinkWriter_Release(wr); wr = NULL; }
         else InterlockedIncrement(&g_frames);
     }
     EnterCriticalSection(&g_cs);       // frames still queued (after a failure) are dropped
@@ -264,7 +268,7 @@ static DWORD WINAPI encoder(void *arg) {
     if (wr) {
         HRESULT hr = IMFSinkWriter_Finalize(wr);
         IMFSinkWriter_Release(wr);
-        if (FAILED(hr)) fail("完成视频文件失败", hr);
+        if (FAILED(hr)) fail(EXPERR_FINALIZE, hr);
     }
     if (started) pMFShutdown();
     if (SUCCEEDED(co)) CoUninitialize();
@@ -296,8 +300,9 @@ int avdump_start(const wchar_t *path, int quality) {
     if (g_state == AVDUMP_RUNNING || g_state == AVDUMP_FINISHING) return 0;
     if (g_thread) { WaitForSingleObject(g_thread, INFINITE); CloseHandle(g_thread); g_thread = NULL; }
     while (g_qn) { free_item(g_q[g_qhead]); g_qhead = (g_qhead + 1) % QUEUE_FRAMES; g_qn--; }
-    g_err[0] = 0;
-    if (!load_mf()) { fail("系统缺少 Media Foundation 组件", E_FAIL); return 0; }
+    g_errCode = EXPERR_NONE;
+    g_errHr = 0;
+    if (!load_mf()) { fail(EXPERR_NO_MF, E_FAIL); return 0; }
     wcsncpy(g_path, path, MAX_PATH - 1);
     g_path[MAX_PATH - 1] = 0;
     g_quality = quality;
@@ -314,7 +319,7 @@ int avdump_start(const wchar_t *path, int quality) {
     g_pix = NULL;
     InterlockedExchange(&g_state, AVDUMP_RUNNING);
     g_thread = CreateThread(NULL, 0, encoder, NULL, 0, NULL);
-    if (!g_thread) { fail("无法启动编码线程", E_FAIL); return 0; }
+    if (!g_thread) { fail(EXPERR_THREAD, E_FAIL); return 0; }
     char u[MAX_PATH * 3];
     WideCharToMultiByte(CP_UTF8, 0, g_path, -1, u, sizeof u, NULL, NULL);
     tas_log("export started: %s", u);
@@ -333,7 +338,7 @@ void avdump_finish(DWORD ms) {
 int avdump_active(void) { return g_state == AVDUMP_RUNNING; }
 int avdump_state(void) { return g_state; }
 uint32_t avdump_frames(void) { return (uint32_t)g_frames; }
-const char *avdump_error(void) { return g_err; }
+uint32_t avdump_error(uint32_t *hr) { if (hr) *hr = g_errHr; return g_errCode; }
 
 void avdump_video(const uint8_t *bgrx, int pitch, UINT w, UINT h) {
     if (g_state != AVDUMP_RUNNING || !bgrx) return;

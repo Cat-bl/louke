@@ -310,7 +310,9 @@ static void publish_status(void) {
     if (!g_sh) return;
     g_sh->exportState = (uint32_t)avdump_state();
     g_sh->exportFrames = avdump_frames();
-    strncpy(g_sh->exportError, avdump_error(), sizeof g_sh->exportError - 1);
+    uint32_t hr = 0;
+    g_sh->exportErrorCode = avdump_error(&hr);
+    g_sh->exportErrorHr = hr;
     for (int k = 0; k < TAS_SLOTS; k++) g_sh->slotFrame[k] = state_frame(k);
     g_sh->frame = g_frame;
     g_sh->movieLen = g_movieLen;
@@ -1268,6 +1270,12 @@ typedef struct {
     TlsVals vals;
     uint8_t *stack;
     uint8_t tls[64];
+    // what the thread waits for (see may_go): the wait it goes back to, not the one it left
+    uint8_t wkind, wall, walert;
+    DWORD wn;
+    HANDLE wh[MAXIMUM_WAIT_OBJECTS];
+    int8_t wtype[MAXIMUM_WAIT_OBJECTS];
+    LPCRITICAL_SECTION wcs;
 } SavedThread;
 static const SavedThread g_idleThread = {ST_IDLE};
 
@@ -1283,6 +1291,9 @@ __attribute__((used, noreturn)) static void __cdecl restore_body(ThreadSlot *s) 
         s->lt = t->lt; s->order = t->order; s->parkErr = t->parkErr;
         s->yielded = t->yielded; s->hasDeadline = t->hasDeadline; s->vdeadline = t->vdeadline;
         s->polls = t->polls; s->qframe = t->qframe; s->queries = t->queries;
+        s->wkind = t->wkind; s->wall = t->wall; s->walert = t->walert; s->wn = t->wn; s->wcs = t->wcs;
+        memcpy(s->wh, t->wh, sizeof s->wh);
+        memcpy(s->wtype, t->wtype, sizeof s->wtype);
         s->work = 0; s->lsuspend = 0;
         memcpy(s->exitJb, t->exitJb, sizeof s->exitJb);
         s->exitSeh = t->exitSeh;
@@ -1299,6 +1310,7 @@ __attribute__((used, noreturn)) static void __cdecl restore_body(ThreadSlot *s) 
     ss_tls_reset();
     s->lt = -1; s->work = 0; s->lsuspend = 0; s->exitJbValid = 0;
     s->yielded = 0; s->hasDeadline = 0; s->polls = 0;
+    s->wkind = WK_ANY;
     teb_write(0, s->idleSeh);
     s->restore = NULL;
     __builtin_longjmp(s->idleJb, 1);
@@ -1510,7 +1522,19 @@ static DWORD any_wait(DWORD n, const HANDLE *hs, BOOL all, DWORD ms, BOOL alerta
         else {
             if (alertable && lockstep()) async_settle();
             if (ms == 0) { r = o_SleepEx(0, alertable); game_poll(); }
-            else { background_turn(); r = o_SleepEx(ms, alertable); }
+            else {
+                // Before the first frame there is no frame clock: when the main thread only sleeps
+                // (for example polling a flag another thread sets) and every other game thread
+                // waits for a timeout, let virtual time pass up to the next timeout, as a wait does.
+                static int64_t idleSince;
+                if (background_turn() || g_gameThread || !lockstep()) idleSince = 0;
+                else if (!idleSince) idleSince = real_qpc();
+                else if ((real_qpc() - idleSince) * 1000 / g_realFreq > 20 && advance_to_deadline(INT64_MAX)) {
+                    idleSince = 0;
+                    background_turn();
+                }
+                r = o_SleepEx(ms, alertable);
+            }
         }
         if (g_frameProf) g_mainWaitTicks += real_qpc() - t0;
         return r;
@@ -1856,6 +1880,9 @@ static int save_threads(StateInfo *s, int slot) {
                 v->lt = t->lt; v->order = t->order; v->parkErr = t->parkErr;
                 v->yielded = t->yielded; v->hasDeadline = t->hasDeadline; v->vdeadline = t->vdeadline;
                 v->polls = t->polls; v->qframe = t->qframe; v->queries = t->queries;
+                v->wkind = t->wkind; v->wall = t->wall; v->walert = t->walert; v->wn = t->wn; v->wcs = t->wcs;
+                memcpy(v->wh, t->wh, sizeof v->wh);
+                memcpy(v->wtype, t->wtype, sizeof v->wtype);
                 memcpy(v->jb, t->parkJb, sizeof v->jb);
                 memcpy(v->exitJb, t->exitJb, sizeof v->exitJb);
                 v->seh = t->parkSeh;
@@ -2285,7 +2312,10 @@ static int init(void) {
     IMAGE_NT_HEADERS32 *nt = (IMAGE_NT_HEADERS32 *)((uint8_t *)exe + ((IMAGE_DOS_HEADER *)exe)->e_lfanew);
     g_profile = games_find(exe, nt);
     logf_("game profile: %s (exe timestamp %08lX)", g_profile ? g_profile->id : "none (generic core)", nt->FileHeader.TimeDateStamp);
-    if (g_sh && g_profile) wcsncpy(g_sh->gameTitle, g_profile->title, 47);
+    if (g_sh && g_profile) {
+        wcsncpy(g_sh->gameTitle, g_profile->title, 47);
+        wcsncpy(g_sh->gameTitleEn, g_profile->titleEn, 47);
+    }
 
     if (g_mode == MODE_PLAY && !movie_load()) return 0;
 
