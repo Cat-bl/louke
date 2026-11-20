@@ -11,4 +11,5 @@ pushd "%SRC%"
 popd
 "%CC%" -O2 -Wall -Wextra -static -municode -mwindows -o "%~dp0bin\louke.exe" "%SRC%\gui.c" "%~dp0bin\app.res.o" -lcomctl32 -lcomdlg32 || exit /b 1
 del "%~dp0bin\app.res.o"
+"%CC%" -O2 -Wall -Wextra -municode -o "%~dp0devtools\testlaunch.exe" "%~dp0devtools\testlaunch.c" || exit /b 1
 echo build ok
