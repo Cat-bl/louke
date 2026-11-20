@@ -1,0 +1,53 @@
+# 打包发布：推送 v 开头的标签（例如 v0.2.0）时编译并在 Releases 发布 louke-<标签>.zip；
+# 在 Actions 页面手动运行时只编译，压缩包放在这次运行的 Artifacts 里。
+name: 打包发布
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      LLVM_MINGW: llvm-mingw-20261104-ucrt-x86_64
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 下载编译器（llvm-mingw）
+        shell: pwsh
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest "https://github.com/mstorsjo/llvm-mingw/releases/download/20261104/$env:LLVM_MINGW.zip" -OutFile llvm-mingw.zip
+          New-Item -ItemType Directory -Force tools | Out-Null
+          tar -xf llvm-mingw.zip -C tools
+          Remove-Item llvm-mingw.zip
+
+      - name: 编译
+        shell: cmd
+        run: call build.bat
+
+      - name: 打包
+        shell: pwsh
+        run: |
+          $name = if ($env:GITHUB_REF_TYPE -eq 'tag') { "louke-$env:GITHUB_REF_NAME" } else { "louke-$($env:GITHUB_SHA.Substring(0, 7))" }
+          New-Item -ItemType Directory -Force "dist/$name" | Out-Null
+          Copy-Item bin/louke.exe, bin/louke.dll "dist/$name/"
+          Compress-Archive "dist/$name/*" "dist/$name.zip"
+          "PKG=$name" >> $env:GITHUB_ENV
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.PKG }}
+          path: dist/${{ env.PKG }}/
+
+      - name: 发布到 Releases
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$env:GITHUB_REF_NAME" "dist/$env:PKG.zip" --title "Louke $env:GITHUB_REF_NAME" --generate-notes
