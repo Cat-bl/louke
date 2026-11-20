@@ -45,9 +45,20 @@ jobs:
           name: ${{ env.PKG }}
           path: dist/${{ env.PKG }}/
 
+      # 版本说明 = 标签里写的说明（git tag -a v0.2.0 -m "说明"）；标签没写说明时用 GitHub 自动生成的
       - name: 发布到 Releases
         if: github.ref_type == 'tag'
-        shell: pwsh
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$env:GITHUB_REF_NAME" "dist/$env:PKG.zip" --title "Louke $env:GITHUB_REF_NAME" --generate-notes
+        run: |
+          tag="$GITHUB_REF_NAME"
+          git fetch --force origin "refs/tags/$tag:refs/tags/$tag"
+          if [ "$(git cat-file -t "$tag")" = tag ]; then
+            git tag -l --format='%(contents)' "$tag" > notes.md
+          fi
+          if [ -s notes.md ] && grep -q '[^[:space:]]' notes.md; then
+            gh release create "$tag" "dist/$PKG.zip" --title "Louke $tag" --notes-file notes.md
+          else
+            gh release create "$tag" "dist/$PKG.zip" --title "Louke $tag" --generate-notes
+          fi
